@@ -1,0 +1,21 @@
+{
+  "name": "jasper-finance-bot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+"scripts": {
+  "start": "node index.js"
+},
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "googleapis": "^171.4.0",
+    "node-cron": "^4.2.1",
+    "node-telegram-bot-api": "^0.67.0",
+    "openai": "^6.34.0",
+    "tesseract.js": "^7.0.0"
+  }
+}
