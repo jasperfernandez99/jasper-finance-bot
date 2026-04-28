@@ -20,7 +20,7 @@ const openai = new OpenAI({
 const SPREADSHEET_ID = "1qrtNcxJOYulLpK_5XnMNIMSKVq-uFnYSWB-J5yR6QhM";
 const SHEET_RANGE = "Sheet1!A:D";
 
-console.log("Bot running with logging, sheet queries, and receipts");
+console.log("Bot running with hard receipt extraction");
 
 // ===== GOOGLE SHEETS =====
 function getGoogleAuth() {
@@ -87,7 +87,7 @@ function rowsToData(rows) {
   })).filter(item => !isNaN(item.amount));
 }
 
-// ===== AI EXPENSE PARSER =====
+// ===== EXPENSE PARSER =====
 async function parseExpense(text) {
   const result = await openai.chat.completions.create({
     model: "gpt-4o-mini",
@@ -95,7 +95,7 @@ async function parseExpense(text) {
       {
         role: "system",
         content: `
-Extract expense details from the user's message.
+Extract expense details.
 
 Return JSON only:
 {
@@ -108,17 +108,9 @@ Rules:
 - If quantity is mentioned, calculate total.
 - "5 hotdogs for $1 each" means amount is 5.
 - Food includes meals, drinks, coffee, tea, snacks, bread, restaurants, cafes.
-- Transport includes Grab, taxi, MRT, bus, petrol, parking.
-- Groceries includes supermarkets, NTUC, FairPrice, Donki, household food supplies.
-- Shopping includes clothes, shoes, online shopping, accessories.
-- Lifestyle includes grooming, subscriptions, self-care.
-- Entertainment includes movies, games, activities.
 `
       },
-      {
-        role: "user",
-        content: text
-      }
+      { role: "user", content: text }
     ]
   });
 
@@ -129,47 +121,129 @@ Rules:
   }
 }
 
-// ===== RECEIPT PARSER =====
-async function parseReceiptTotal(receiptText) {
+// ===== HARD RECEIPT EXTRACTION =====
+function extractTotalFromReceiptText(text) {
+  const lines = text
+    .split("\n")
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  console.log("OCR TEXT:", text);
+
+  const totalKeywords = [
+    "TOTAL",
+    "GRAND TOTAL",
+    "NET TOTAL",
+    "AMOUNT PAID",
+    "AMT PAID",
+    "TOTAL PAID"
+  ];
+
+  const ignoreKeywords = [
+    "SUBTOTAL",
+    "SUB TOTAL",
+    "SERVICE",
+    "SVC",
+    "GST",
+    "TAX",
+    "CHANGE",
+    "CHRG",
+    "ROUND"
+  ];
+
+  // 1. Prefer lines that contain TOTAL but not SUBTOTAL
+  for (const line of lines) {
+    const upper = line.toUpperCase();
+
+    const hasTotalKeyword = totalKeywords.some(keyword => upper.includes(keyword));
+    const shouldIgnore = ignoreKeywords.some(keyword => upper.includes(keyword));
+
+    if (hasTotalKeyword && !shouldIgnore) {
+      const amounts = line.match(/\$?\s*\d+[.,]\d{2}/g);
+
+      if (amounts && amounts.length > 0) {
+        const lastAmount = amounts[amounts.length - 1]
+          .replace("$", "")
+          .replace(/\s/g, "")
+          .replace(",", ".");
+
+        const amount = Number(lastAmount);
+
+        if (!isNaN(amount)) {
+          return amount;
+        }
+      }
+    }
+  }
+
+  // 2. If OCR splits TOTAL and amount across nearby lines, find TOTAL then scan next 2 lines
+  for (let i = 0; i < lines.length; i++) {
+    const upper = lines[i].toUpperCase();
+
+    const isTotalLine =
+      upper.includes("TOTAL") &&
+      !upper.includes("SUBTOTAL") &&
+      !upper.includes("SUB TOTAL");
+
+    if (isTotalLine) {
+      const nearby = [lines[i], lines[i + 1], lines[i + 2]].filter(Boolean).join(" ");
+      const amounts = nearby.match(/\$?\s*\d+[.,]\d{2}/g);
+
+      if (amounts && amounts.length > 0) {
+        const lastAmount = amounts[amounts.length - 1]
+          .replace("$", "")
+          .replace(/\s/g, "")
+          .replace(",", ".");
+
+        const amount = Number(lastAmount);
+
+        if (!isNaN(amount)) {
+          return amount;
+        }
+      }
+    }
+  }
+
+  // 3. Fallback: choose largest money amount from bottom half of receipt
+  const bottomHalf = lines.slice(Math.floor(lines.length / 2)).join(" ");
+  const allAmounts = bottomHalf.match(/\$?\s*\d+[.,]\d{2}/g);
+
+  if (allAmounts && allAmounts.length > 0) {
+    const numbers = allAmounts
+      .map(a => Number(a.replace("$", "").replace(/\s/g, "").replace(",", ".")))
+      .filter(n => !isNaN(n));
+
+    if (numbers.length > 0) {
+      return Math.max(...numbers);
+    }
+  }
+
+  return null;
+}
+
+// ===== AI RECEIPT FALLBACK =====
+async function parseReceiptTotalWithAI(receiptText) {
   const result = await openai.chat.completions.create({
     model: "gpt-4o-mini",
     messages: [
       {
         role: "system",
         content: `
-You are extracting the FINAL TOTAL PAID from a receipt.
-
-VERY IMPORTANT RULES:
-- Always prioritise the line labelled:
-  TOTAL
-  GRAND TOTAL
-  NET TOTAL
-  AMOUNT PAID
-
-- IGNORE:
-  subtotal
-  service charge
-  GST
-  tax
-  change
-  rounding
-  receipt number
-  table number
-
-- The correct amount is usually the largest number near the bottom of the receipt.
-- Do not return service charge or GST as the final total.
+Extract only the FINAL TOTAL PAID from this receipt.
 
 Return JSON only:
 {
   "amount": number,
   "description": "merchant or short description"
 }
+
+Rules:
+- Prioritise the line labelled TOTAL, GRAND TOTAL, NET TOTAL, or AMOUNT PAID.
+- Ignore subtotal, service charge, GST, tax, change, rounding.
+- Do not return GST or service charge.
 `
       },
-      {
-        role: "user",
-        content: receiptText
-      }
+      { role: "user", content: receiptText }
     ]
   });
 
@@ -180,7 +254,7 @@ Return JSON only:
   }
 }
 
-// ===== SUMMARY / QUESTIONS =====
+// ===== SUMMARY =====
 function getSummary(data) {
   let total = 0;
   const categories = {};
@@ -194,10 +268,7 @@ function getSummary(data) {
     .map(([category, amount]) => `${category}: $${amount.toFixed(2)}`)
     .join("\n");
 
-  return {
-    total,
-    breakdown
-  };
+  return { total, breakdown };
 }
 
 function filterDataByQuestion(data, question) {
@@ -215,7 +286,6 @@ function filterDataByQuestion(data, question) {
     const start = new Date(now);
     start.setDate(now.getDate() - now.getDay());
     start.setHours(0, 0, 0, 0);
-
     return data.filter(item => new Date(item.date) >= start);
   }
 
@@ -276,10 +346,7 @@ Examples:
 - 5 hotdogs for $1 each
 `
       },
-      {
-        role: "user",
-        content: text
-      }
+      { role: "user", content: text }
     ]
   });
 
@@ -353,15 +420,23 @@ bot.on("photo", async (msg) => {
           const result = await Tesseract.recognize(filePath, "eng");
           const receiptText = result.data.text;
 
-          const parsed = await parseReceiptTotal(receiptText);
+          let amount = extractTotalFromReceiptText(receiptText);
+          let description = "receipt";
 
-          if (!parsed || !parsed.amount) {
+          if (!amount) {
+            const aiParsed = await parseReceiptTotalWithAI(receiptText);
+
+            if (aiParsed && aiParsed.amount) {
+              amount = Number(aiParsed.amount);
+              description = aiParsed.description || "receipt";
+            }
+          }
+
+          if (!amount || isNaN(amount)) {
             fs.unlinkSync(filePath);
             return bot.sendMessage(chatId, "Could not read receipt total.");
           }
 
-          const amount = Number(parsed.amount);
-          const description = parsed.description || "receipt";
           const date = new Date().toISOString();
 
           await appendToSheet([date, "food", amount, description]);
