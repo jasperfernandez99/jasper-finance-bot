@@ -1,4 +1,5 @@
 require("dotenv").config();
+
 const TelegramBot = require("node-telegram-bot-api");
 const OpenAI = require("openai");
 const { google } = require("googleapis");
@@ -16,11 +17,13 @@ const openai = new OpenAI({
 const SPREADSHEET_ID = "1qrtNcxJOYulLpK_5XnMNIMSKVq-uFnYSWB-J5yR6QhM";
 const SHEET_RANGE = "Sheet1!A:D";
 
-console.log("Bot running with Google Sheets");
+console.log("Bot running with Google Sheets debug");
 
 // ===== GOOGLE SHEETS AUTH =====
 function getGoogleAuth() {
   if (process.env.GOOGLE_CREDENTIALS) {
+    console.log("Using GOOGLE_CREDENTIALS from Railway");
+
     return new google.auth.GoogleAuth({
       credentials: JSON.parse(
         Buffer.from(process.env.GOOGLE_CREDENTIALS, "base64").toString("utf-8")
@@ -28,6 +31,8 @@ function getGoogleAuth() {
       scopes: ["https://www.googleapis.com/auth/spreadsheets"]
     });
   }
+
+  console.log("Using local credentials.json");
 
   return new google.auth.GoogleAuth({
     keyFile: "credentials.json",
@@ -38,6 +43,8 @@ function getGoogleAuth() {
 const auth = getGoogleAuth();
 
 async function appendToSheet(row) {
+  console.log("TRYING TO WRITE TO SHEET");
+
   const client = await auth.getClient();
   const sheets = google.sheets({ version: "v4", auth: client });
 
@@ -49,9 +56,40 @@ async function appendToSheet(row) {
       values: [row]
     }
   });
+
+  console.log("SUCCESSFULLY WROTE TO SHEET");
 }
 
-// ===== BOT =====
+// ===== AI FALLBACK =====
+async function getAIReply(text) {
+  const aiReply = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages: [
+      {
+        role: "system",
+        content: `
+You are a friendly personal finance assistant.
+Guide the user to log expenses clearly.
+
+Examples:
+- coffee $2
+- lunch $8
+- pepper lunch $19.40
+
+Keep replies short.
+`
+      },
+      {
+        role: "user",
+        content: text
+      }
+    ]
+  });
+
+  return aiReply.choices[0].message.content;
+}
+
+// ===== BOT HANDLER =====
 bot.on("message", async (msg) => {
   const text = msg.text;
   if (!text) return;
@@ -63,7 +101,6 @@ bot.on("message", async (msg) => {
 
     if (amountMatch) {
       const amount = Number(amountMatch[0].replace("$", ""));
-
       const date = new Date().toISOString();
       const category = "other";
       const description = text;
@@ -76,36 +113,11 @@ bot.on("message", async (msg) => {
       );
     }
 
-    const aiReply = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content: `
-You are a friendly personal finance assistant.
-Guide the user to log expenses clearly.
-
-Examples:
-- "coffee $2"
-- "lunch $8"
-Keep it short.
-`
-        },
-        {
-          role: "user",
-          content: text
-        }
-      ]
-    });
-
-    return bot.sendMessage(
-      msg.chat.id,
-      aiReply.choices[0].message.content
-    );
+    const reply = await getAIReply(text);
+    return bot.sendMessage(msg.chat.id, reply);
 
   } catch (err) {
-    console.error(err);
+    console.error("ERROR:", err);
     return bot.sendMessage(msg.chat.id, "Error occurred while saving.");
   }
 });
-
