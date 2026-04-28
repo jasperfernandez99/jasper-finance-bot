@@ -173,7 +173,52 @@ bot.on("message", async msg => {
 
   // expense
   const items = await parseExpense(text);
-  if (!items.length) return bot.sendMessage(msg.chat.id, "Not sure 🤔");
+  if (!items.length)const aiReply = await openai.chat.completions.create({
+  model: "gpt-4o-mini",
+  messages: [
+    {
+      role: "system",
+      content: `
+You are a friendly personal finance assistant.
+If the user message is unclear, guide them to log expenses.
+
+Examples:
+- "5 coffee $2 each"
+- "lunch $8"
+- "grab $12"
+Keep it short and helpful.
+`
+    },
+    { role: "user", content: text }
+  ]
+});
+  // ===== SAFE AI FALLBACK (only if nothing returned above) =====
+  const aiReply = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages: [
+      {
+        role: "system",
+        content: `
+You are a friendly personal finance assistant.
+If the user message is unclear, guide them to log expenses.
+
+Examples:
+- "5 coffee $2 each"
+- "lunch $8"
+- "grab $12"
+Keep it short and helpful.
+`
+      },
+      { role: "user", content: text }
+    ]
+  });
+
+  return bot.sendMessage(
+    msg.chat.id,
+    aiReply.choices[0].message.content
+  );
+
+return bot.sendMessage(msg.chat.id, aiReply.choices[0].message.content); return bot.sendMessage(msg.chat.id, "Not sure 🤔");
 
   const small = items.filter(i => i.amount < 10);
   const large = items.filter(i => i.amount >= 10);
