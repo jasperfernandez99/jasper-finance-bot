@@ -137,18 +137,33 @@ async function parseReceiptTotal(receiptText) {
       {
         role: "system",
         content: `
-Extract only the final total amount from this receipt.
+You are extracting the FINAL TOTAL PAID from a receipt.
+
+VERY IMPORTANT RULES:
+- Always prioritise the line labelled:
+  TOTAL
+  GRAND TOTAL
+  NET TOTAL
+  AMOUNT PAID
+
+- IGNORE:
+  subtotal
+  service charge
+  GST
+  tax
+  change
+  rounding
+  receipt number
+  table number
+
+- The correct amount is usually the largest number near the bottom of the receipt.
+- Do not return service charge or GST as the final total.
 
 Return JSON only:
 {
   "amount": number,
-  "description": "short receipt description"
+  "description": "merchant or short description"
 }
-
-Rules:
-- Ignore line items.
-- Ignore service charge, GST, change, receipt number, table number.
-- Use the final total paid.
 `
       },
       {
