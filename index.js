@@ -173,12 +173,32 @@ bot.on("message", async msg => {
 
   // expense
   const items = await parseExpense(text);
-  if (!items.length)const aiReply = await openai.chat.completions.create({
-  model: "gpt-4o-mini",
-  messages: [
-    {
-      role: "system",
-      content: `
+if (!items.length) {
+  const aiReply = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages: [
+      {
+        role: "system",
+        content: `
+You are a friendly personal finance assistant.
+If the user message is unclear, guide them to log expenses.
+
+Examples:
+- "5 coffee $2 each"
+- "lunch $8"
+- "grab $12"
+Keep it short and helpful.
+`
+      },
+      { role: "user", content: text }
+    ]
+  });
+
+  return bot.sendMessage(
+    msg.chat.id,
+    aiReply.choices[0].message.content
+  );
+}
 You are a friendly personal finance assistant.
 If the user message is unclear, guide them to log expenses.
 
