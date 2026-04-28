@@ -20,7 +20,45 @@ const openai = new OpenAI({
 const SPREADSHEET_ID = "1qrtNcxJOYulLpK_5XnMNIMSKVq-uFnYSWB-J5yR6QhM";
 const SHEET_RANGE = "Sheet1!A:D";
 
-console.log("Bot running with hard receipt extraction");
+console.log("Mr Finance Advisor is running");
+
+// ===== PERSONA =====
+const PERSONA_PROMPT = `
+You are "Mr Finance Advisor".
+
+Personality:
+- Direct, concise, no fluff.
+- Practical and slightly strict.
+- Calm, clear, and useful.
+- Occasionally dry humour, but never distracting.
+
+Role:
+- Track expenses.
+- Help the user understand spending.
+- Encourage financial discipline.
+- Do not over-explain.
+
+Style rules:
+- Keep replies short.
+- Use clean formatting.
+- No unnecessary emojis.
+- Prefer clarity over friendliness.
+- If the user is vague, ask for the missing item or amount.
+
+Examples:
+User: hello
+Assistant: Ready. Log an expense or ask about your spending.
+
+User: coffee $2
+Assistant: Logged. Food — $2.00 — coffee
+
+User: how much have I spent today?
+Assistant:
+Total: $42.30
+
+Food: $30.00
+Transport: $12.30
+`;
 
 // ===== GOOGLE SHEETS =====
 function getGoogleAuth() {
@@ -51,8 +89,6 @@ async function getSheetsClient() {
 }
 
 async function appendToSheet(row) {
-  console.log("TRYING TO WRITE TO SHEET");
-
   const sheets = await getSheetsClient();
 
   await sheets.spreadsheets.values.append({
@@ -63,8 +99,6 @@ async function appendToSheet(row) {
       values: [row]
     }
   });
-
-  console.log("SUCCESSFULLY WROTE TO SHEET");
 }
 
 async function readSheetRows() {
@@ -87,7 +121,7 @@ function rowsToData(rows) {
   })).filter(item => !isNaN(item.amount));
 }
 
-// ===== EXPENSE PARSER =====
+// ===== TEXT EXPENSE PARSER =====
 async function parseExpense(text) {
   const result = await openai.chat.completions.create({
     model: "gpt-4o-mini",
@@ -108,6 +142,11 @@ Rules:
 - If quantity is mentioned, calculate total.
 - "5 hotdogs for $1 each" means amount is 5.
 - Food includes meals, drinks, coffee, tea, snacks, bread, restaurants, cafes.
+- Transport includes Grab, taxi, MRT, bus, petrol, parking.
+- Groceries includes supermarkets, NTUC, FairPrice, Donki, household food supplies.
+- Shopping includes clothes, shoes, online shopping, accessories.
+- Lifestyle includes grooming, subscriptions, self-care.
+- Entertainment includes movies, games, activities.
 `
       },
       { role: "user", content: text }
@@ -121,101 +160,63 @@ Rules:
   }
 }
 
-// ===== HARD RECEIPT EXTRACTION =====
+// ===== STRICT RECEIPT EXTRACTION =====
 function extractTotalFromReceiptText(text) {
   const lines = text
     .split("\n")
-    .map(line => line.trim())
+    .map(l => l.trim())
     .filter(Boolean);
 
   console.log("OCR TEXT:", text);
 
-  const totalKeywords = [
-    "TOTAL",
-    "GRAND TOTAL",
-    "NET TOTAL",
-    "AMOUNT PAID",
-    "AMT PAID",
-    "TOTAL PAID"
-  ];
-
-  const ignoreKeywords = [
-    "SUBTOTAL",
-    "SUB TOTAL",
-    "SERVICE",
-    "SVC",
-    "GST",
-    "TAX",
-    "CHANGE",
-    "CHRG",
-    "ROUND"
-  ];
-
-  // 1. Prefer lines that contain TOTAL but not SUBTOTAL
   for (const line of lines) {
     const upper = line.toUpperCase();
 
-    const hasTotalKeyword = totalKeywords.some(keyword => upper.includes(keyword));
-    const shouldIgnore = ignoreKeywords.some(keyword => upper.includes(keyword));
-
-    if (hasTotalKeyword && !shouldIgnore) {
-      const amounts = line.match(/\$?\s*\d+[.,]\d{2}/g);
-
-      if (amounts && amounts.length > 0) {
-        const lastAmount = amounts[amounts.length - 1]
-          .replace("$", "")
-          .replace(/\s/g, "")
-          .replace(",", ".");
-
-        const amount = Number(lastAmount);
-
-        if (!isNaN(amount)) {
-          return amount;
-        }
-      }
-    }
-  }
-
-  // 2. If OCR splits TOTAL and amount across nearby lines, find TOTAL then scan next 2 lines
-  for (let i = 0; i < lines.length; i++) {
-    const upper = lines[i].toUpperCase();
-
-    const isTotalLine =
+    if (
       upper.includes("TOTAL") &&
       !upper.includes("SUBTOTAL") &&
-      !upper.includes("SUB TOTAL");
+      !upper.includes("SUB TOTAL")
+    ) {
+      const match = line.match(/\$?\s*\d+[.,]\d{2}/g);
 
-    if (isTotalLine) {
-      const nearby = [lines[i], lines[i + 1], lines[i + 2]].filter(Boolean).join(" ");
-      const amounts = nearby.match(/\$?\s*\d+[.,]\d{2}/g);
-
-      if (amounts && amounts.length > 0) {
-        const lastAmount = amounts[amounts.length - 1]
+      if (match) {
+        const value = match[match.length - 1]
           .replace("$", "")
           .replace(/\s/g, "")
           .replace(",", ".");
 
-        const amount = Number(lastAmount);
+        const amount = Number(value);
 
         if (!isNaN(amount)) {
+          console.log("FOUND TOTAL LINE:", line);
           return amount;
         }
       }
     }
   }
 
-  // 3. Fallback: choose largest money amount from bottom half of receipt
-  const bottomHalf = lines.slice(Math.floor(lines.length / 2)).join(" ");
-  const allAmounts = bottomHalf.match(/\$?\s*\d+[.,]\d{2}/g);
+  const bottomLines = lines.slice(-5);
+  let max = 0;
 
-  if (allAmounts && allAmounts.length > 0) {
-    const numbers = allAmounts
-      .map(a => Number(a.replace("$", "").replace(/\s/g, "").replace(",", ".")))
-      .filter(n => !isNaN(n));
+  for (const line of bottomLines) {
+    const matches = line.match(/\$?\s*\d+[.,]\d{2}/g);
 
-    if (numbers.length > 0) {
-      return Math.max(...numbers);
+    if (matches) {
+      for (const m of matches) {
+        const val = Number(
+          m.replace("$", "").replace(/\s/g, "").replace(",", ".")
+        );
+
+        if (!isNaN(val) && val > max) {
+          max = val;
+        }
+      }
     }
+  }
+
+  if (max > 0) {
+    console.log("FALLBACK MAX:", max);
+    return max;
   }
 
   return null;
@@ -238,7 +239,7 @@ Return JSON only:
 }
 
 Rules:
-- Prioritise the line labelled TOTAL, GRAND TOTAL, NET TOTAL, or AMOUNT PAID.
+- Prioritise TOTAL, GRAND TOTAL, NET TOTAL, or AMOUNT PAID.
 - Ignore subtotal, service charge, GST, tax, change, rounding.
 - Do not return GST or service charge.
 `
@@ -335,16 +336,7 @@ async function getAIReply(text) {
     messages: [
       {
         role: "system",
-        content: `
-You are a friendly personal finance assistant.
-Keep replies short.
-If the user wants to log expenses, ask them to include an item and amount.
-
-Examples:
-- coffee $2
-- lunch $8
-- 5 hotdogs for $1 each
-`
+        content: PERSONA_PROMPT
       },
       { role: "user", content: text }
     ]
@@ -372,7 +364,10 @@ bot.on("message", async (msg) => {
       const parsed = await parseExpense(text);
 
       if (!parsed || !parsed.amount) {
-        return bot.sendMessage(msg.chat.id, "I found an amount, but could not understand the expense clearly.");
+        return bot.sendMessage(
+          msg.chat.id,
+          "Be specific. I found an amount, but not a clear expense."
+        );
       }
 
       const date = new Date().toISOString();
@@ -384,7 +379,7 @@ bot.on("message", async (msg) => {
 
       return bot.sendMessage(
         msg.chat.id,
-        `Logged to sheet:\n${category} — $${amount.toFixed(2)} — ${description}`
+        `Logged.\n${category} — $${amount.toFixed(2)} — ${description}`
       );
     }
 
@@ -393,7 +388,7 @@ bot.on("message", async (msg) => {
 
   } catch (err) {
     console.error("ERROR:", err);
-    return bot.sendMessage(msg.chat.id, "Error occurred while processing.");
+    return bot.sendMessage(msg.chat.id, "Processing failed. Try again cleanly.");
   }
 });
 
@@ -445,19 +440,19 @@ bot.on("photo", async (msg) => {
 
           return bot.sendMessage(
             chatId,
-            `Receipt logged:\nfood — $${amount.toFixed(2)} — ${description}`
+            `Receipt processed.\nfood — $${amount.toFixed(2)} — ${description}`
           );
 
         } catch (err) {
           console.error("RECEIPT ERROR:", err);
           if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-          return bot.sendMessage(chatId, "Error processing receipt.");
+          return bot.sendMessage(chatId, "Receipt processing failed.");
         }
       });
     });
 
   } catch (err) {
     console.error("PHOTO ERROR:", err);
-    return bot.sendMessage(chatId, "Error reading receipt.");
+    return bot.sendMessage(chatId, "Could not read receipt.");
   }
 });
