@@ -179,16 +179,15 @@ if (!items.length) {
     messages: [
       {
         role: "system",
-        content: `
-You are a friendly personal finance assistant.
+        content:
+ `You are a friendly personal finance assistant.
 If the user message is unclear, guide them to log expenses.
 
 Examples:
 - "5 coffee $2 each"
 - "lunch $8"
 - "grab $12"
-Keep it short and helpful.
-`
+Keep it short and helpful.`
       },
       { role: "user", content: text }
     ]
